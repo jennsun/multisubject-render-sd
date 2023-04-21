@@ -18,8 +18,14 @@ from typing import Optional
 from huggingface_hub import hf_hub_download
 hf_hub_download = partial(hf_hub_download, library_name="gligen_demo")
 
+import openai
+from gradio.components import Textbox, Text
+import os
+
 arg_bool = lambda x: x.lower() == 'true'
 device = default_device()
+
+# THIS IS THE LOCAL VERSION
 
 print(f"GLIGEN uses {device.upper()} device.")
 if device == "cpu":
@@ -131,7 +137,7 @@ class Blocks(gr.Blocks):
         self.extra_configs = {
             'thumbnail': kwargs.pop('thumbnail', ''),
             'url': kwargs.pop('url', 'https://gradio.app/'),
-            'creator': kwargs.pop('creator', '@teamGradio'),
+            'creator': kwargs.pop('creator', 'Jenny Sun'),
         }
 
         super(Blocks, self).__init__(theme, analytics_enabled, mode, title, css, **kwargs)
@@ -244,14 +250,17 @@ def get_concat(ims):
 
 
 def auto_append_grounding(language_instruction, grounding_texts):
+    print("all grounding_texts", grounding_texts)
+    print("language_instruction 1", language_instruction)
+    if language_instruction == "textbox":
+        language_instruction = seed
+    print("language_instruction 1.5", language_instruction)
     for grounding_text in grounding_texts:
-        if grounding_text not in language_instruction and grounding_text != 'auto':
-            language_instruction += "; " + grounding_text
-    print(language_instruction)
+        # if grounding_text not in language_instruction and grounding_text != 'auto':
+        language_instruction += "; " + grounding_text
+    print("auto_append_grounding language instruction", language_instruction)
+    print("language_instruction 2", language_instruction)
     return language_instruction
-
-
-
 
 def generate(task, language_instruction, grounding_texts, sketch_pad,
              alpha_sample, guidance_scale, batch_size,
@@ -262,6 +271,8 @@ def generate(task, language_instruction, grounding_texts, sketch_pad,
 
     boxes = state['boxes']
     grounding_texts = [x.strip() for x in grounding_texts.split(';')]
+    print("grounding", grounding_texts)
+    print("box", boxes)
     assert len(boxes) == len(grounding_texts)
     boxes = (np.asarray(boxes) / 512).tolist()
     grounding_instruction = json.dumps({obj: box for obj,box in zip(grounding_texts, boxes)})
@@ -287,6 +298,13 @@ def generate(task, language_instruction, grounding_texts, sketch_pad,
     
     if append_grounding:
         language_instruction = auto_append_grounding(language_instruction, grounding_texts)
+
+    # turn grounding_instruction back into Textbox so it is correct type
+    grounding_instruction = gr.Textbox(
+                label="grounding Instruction by User",
+                value=separated_text,
+                visible=False
+    )
 
     gen_images, gen_overlays = inference(
         task, language_instruction, grounding_instruction, boxes, image,
@@ -518,19 +536,63 @@ function () {
 }
 """
 
+# Set up OpenAI API key
+openai.api_key = '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'
+
+prompt_base = 'Separate the subjects in this sentence by semicolons. For example, the sentence "a tiger and a horse running in a greenland" should output "tiger; horse". If there are numbers, make each subject unique. For example, "2 dogs and 1 duck" would be "dog; dog; duck." Do the same for the following sentence: \n'
+
+original_input = ""
+separated_subjects = ""
+
+# language_instruction = gr.Textbox(
+#     label="Language Instruction by User",
+#     value="2 horses running",
+#     visible=False
+# )
+# grounding_instruction = gr.Textbox(
+#     label="Subjects in image (Separated by semicolon)",
+#     value="horse; horse",
+#     visible=False
+# )
+
+def separate_subjects(input_text):
+    prompt = prompt_base + input_text
+    response = openai.Completion.create(
+        engine="text-davinci-002",
+        prompt=prompt,
+        max_tokens=1024,
+        n=1,
+        stop=None,
+        temperature=0.7,
+    )
+    output_text = response.choices[0].text.strip()
+    return output_text
+
+# def update_original_input():
+#     print("start update_original_input")
+#     global original_input
+#     original_input = language_instruction.value
+#     print("original_input in update:", original_input)
+
+# def update_grounding_instruction():
+#     print("start update_grounding_instruction")
+#     # global original_input # declare you want to use the outer variable
+#     global separated_subjects
+#     update_original_input()
+#     separated_subjects = separate_subjects(language_instruction.value)
+#     # separated_subjects = separate_subjects(original_input)
+#     grounding_instruction.value = separated_subjects
+#     print("original_input:", original_input)
+#     print("separated_subjects", separated_subjects)
+
 with Blocks(
     css=css,
     analytics_enabled=False,
     title="GLIGen demo",
 ) as main:
-    gr.Markdown('<h1 style="text-align: center;">GLIGen: Open-Set Grounded Text-to-Image Generation</h1>')
-    gr.Markdown("""<h3 style="text-align: center" id="paper-info">
-    [<a href="https://gligen.github.io" target="_blank" style="">Project Page</a>]
-    [<a href="https://arxiv.org/abs/2301.07093" target="_blank" style="">Paper</a>]
-    [<a href="https://github.com/gligen/GLIGEN" target="_blank" style="">GitHub Repo</a>]
-    </h3>""")
-    # gr.HTML("", elem_id="mirrors")
-    gr.Markdown("To ground concepts of interest with desired spatial specification, please (1) &#9000;&#65039; enter the concept names in <em> Grounding Instruction</em>, and (2) &#128433;&#65039; draw their corresponding bounding boxes one by one using <em> Sketch Pad</em> -- the parsed boxes will be displayed automatically.")
+    gr.Markdown('<h1 style="text-align: center;">MSR: MultiSubject Render</h1>')
+    gr.Markdown('<h3 style="text-align: center;">Using NLP and Grounding Processing Techniques to improve image generation of multiple subjects with base Stable Diffusion Model</h3>')
+    
     with gr.Row():
         with gr.Column(scale=4):
             sketch_pad_trigger = gr.Number(value=0, visible=False)
@@ -539,18 +601,78 @@ with Blocks(
             image_scale = gr.Number(value=0, elem_id="image_scale", visible=False)
             new_image_trigger = gr.Number(value=0, visible=False)
 
+            # UNCOMMENT THIS WHEN YOU WANT TO TOGGLE INPAINTING OPTION
             task = gr.Radio(
                 choices=["Grounded Generation", 'Grounded Inpainting'],
                 type="value",
                 value="Grounded Generation",
                 label="Task",
             )
+
+            # language_instruction = gr.Textbox(
+            #     label="Enter your prompt here",
+            # )
+            # grounding_instruction = gr.Textbox(
+            #     label="Grounding instruction (Separated by semicolon)",
+            # )
+            # grounding_instruction = separate_subjects(language_instruction.value)
+            # print(f"The user entered: {language_instruction}")
+            # print(f"Our function gave: {grounding_instruction}")
+
+            # EXPERIMENTING:
+            with gr.Column():
+                seed = gr.Text(label="Enter your prompt here:")
+            gr.Examples(["2 horses running", "A cowboy and ninja fighting", "An apple and an orange on a table"], inputs=[seed])
+            with gr.Column():
+                btn = gr.Button("Gen")
+            with gr.Column():
+                separated_text = gr.Text(label="Subjects Separated by Semicolon")
+            btn.click(separate_subjects, inputs=[seed], outputs=[separated_text])
+            ####################
             language_instruction = gr.Textbox(
-                label="Language instruction",
+                label="Language Instruction by User",
+                value=seed,
+                visible=False
             )
-            grounding_instruction = gr.Textbox(
-                label="Grounding instruction (Separated by semicolon)",
-            )
+            # grounding_instruction = gr.Textbox(
+            #     label="Subjects in image (Separated by semicolon)",
+            #     value=separated_text,
+            #     visible=False
+            # )
+            print("separated_text", separated_text)
+            # turn grounding_instruction into separated text for auto_append_grounding
+            grounding_instruction=separated_text
+            # grounding_instruction = gr.Textbox(
+            #     label="grounding Instruction by User",
+            #     value=separated_text,
+            #     visible=False
+            # )
+            print("grounding instrcc", grounding_instruction)
+            # language_instruction = gr.Textbox(
+            #     label="Enter your prompt here",
+            # )
+            # original_input = language_instruction.value
+            # start_btn = gr.Button('Start')
+            # start_btn.click(update_grounding_instruction)
+            # print("separated subjects 2:", separated_subjects)
+
+            # language_instruction = gr.Textbox(
+            #     label="just needs to be here",
+            #     value=seed,
+            #     visible=False
+            # )
+            # grounding_instruction = gr.Textbox(
+            #     label="Subjects in image (Separated by semicolon)",
+            #     value=separated_text,
+            #     visible=False
+            # )
+            
+            print("Language instruction:", language_instruction.value)
+            print("Grounding instruction:", grounding_instruction.value)
+
+
+            ####################
+
             with gr.Row():
                 sketch_pad = ImageMask(label="Sketch Pad", elem_id="img2img_image")
                 out_imagebox = gr.Image(type="pil", label="Parsed Sketch Pad")
@@ -559,25 +681,25 @@ with Blocks(
                 gen_btn = gr.Button(value='Generate', elem_id="generate-btn")
             with gr.Accordion("Advanced Options", open=False):
                 with gr.Column():
-                    alpha_sample = gr.Slider(minimum=0, maximum=1.0, step=0.1, value=0.3, label="Scheduled Sampling (τ)")
-                    guidance_scale = gr.Slider(minimum=0, maximum=50, step=0.5, value=7.5, label="Guidance Scale")
-                    batch_size = gr.Slider(minimum=1, maximum=4, step=1, value=2, label="Number of Samples")
-                    append_grounding = gr.Checkbox(value=True, label="Append grounding instructions to the caption")
+                    alpha_sample = gr.Slider(minimum=0, maximum=1.0, step=0.1, value=0.3, label="Scheduled Sampling (τ)", visible=False)
+                    guidance_scale = gr.Slider(minimum=0, maximum=50, step=0.5, value=20, label="Guidance Scale (how closely it adheres to your prompt)")
+                    batch_size = gr.Slider(minimum=1, maximum=4, step=1, value=4, label="Number of Images")
+                    append_grounding = gr.Checkbox(value=True, label="Append grounding instructions to the caption", visible=False)
                     use_actual_mask = gr.Checkbox(value=False, label="Use actual mask for inpainting", visible=False)
                     with gr.Row():
-                        fix_seed = gr.Checkbox(value=True, label="Fixed seed")
-                        rand_seed = gr.Slider(minimum=0, maximum=1000, step=1, value=0, label="Seed")
+                        fix_seed = gr.Checkbox(value=False, label="Fixed seed", visible=False)
+                        rand_seed = gr.Slider(minimum=0, maximum=1000, step=1, value=0, label="Seed", visible=False)
                     with gr.Row():
-                        use_style_cond = gr.Checkbox(value=False, label="Enable Style Condition")
-                        style_cond_image = gr.Image(type="pil", label="Style Condition", visible=False, interactive=True)
+                        use_style_cond = gr.Checkbox(value=False, label="Enable Style Condition", visible=False)
+                        style_cond_image = gr.Image(type="pil", label="Style Condition", interactive=True, visible=False)
         with gr.Column(scale=4):
             gr.Markdown("### Generated Images")
             with gr.Row():
                 out_gen_1 = gr.Image(type="pil", visible=True, show_label=False)
                 out_gen_2 = gr.Image(type="pil", visible=True, show_label=False)
             with gr.Row():
-                out_gen_3 = gr.Image(type="pil", visible=False, show_label=False)
-                out_gen_4 = gr.Image(type="pil", visible=False, show_label=False)
+                out_gen_3 = gr.Image(type="pil", visible=True, show_label=False)
+                out_gen_4 = gr.Image(type="pil", visible=True, show_label=False)
 
         state = gr.State({})
 
@@ -679,6 +801,14 @@ with Blocks(
             outputs=[out_gen_1, out_gen_2, out_gen_3, out_gen_4, state],
             queue=True
         )
+        # start_btn.click(
+        #     update_grounding_instruction,
+        #     # inputs=[
+        #     #     original_input,
+        #     # ],
+        #     # outputs=[separated_subjects],
+        #     # queue=True
+        # )
         sketch_pad_resize_trigger.change(
             None,
             None,
@@ -702,65 +832,5 @@ with Blocks(
             outputs=[use_style_cond, style_cond_image, alpha_sample, use_actual_mask],
             queue=False)
 
-    with gr.Column():
-        gr.Examples(
-            examples=[
-                [
-                    "images/blank.png",
-                    "Grounded Generation",
-                    "a dog and an apple",
-                    "a dog;an apple",
-                ],
-                [
-                    "images/blank.png",
-                    "Grounded Generation",
-                    "John Lennon is using a pc",
-                    "John Lennon;a pc",
-                [
-                    "images/blank.png",
-                    "Grounded Generation",
-                    "a painting of a fox sitting in a field at sunrise in the style of Claude Mone",
-                    "fox;sunrise",
-                ],
-                ],
-                [
-                    "images/blank.png",
-                    "Grounded Generation",
-                    "a beautiful painting of hot dog by studio ghibli, octane render, brilliantly coloured",
-                    "hot dog",
-                ],
-                [
-                    "images/blank.png",
-                    "Grounded Generation",
-                    "a sport car, unreal engine, global illumination, ray tracing",
-                    "a sport car",
-                ],
-                [
-                    "images/flower_beach.jpg",
-                    "Grounded Inpainting",
-                    "a squirrel and the space needle",
-                    "a squirrel;the space needle",
-                ],
-                [
-                    "images/arg_corgis.jpeg",
-                    "Grounded Inpainting",
-                    "a dog and a birthday cake",
-                    "a dog; a birthday cake",
-                ],
-                [
-                    "images/teddy.jpg",
-                    "Grounded Inpainting",
-                    "a teddy bear wearing a santa claus red shirt; holding a Christmas gift box on hand",
-                    "a santa claus shirt; a Christmas gift box",
-                ],
-            ],
-            inputs=[sketch_pad, task, language_instruction, grounding_instruction],
-            outputs=None,
-            fn=None,
-            cache_examples=False,
-        )
-
 main.queue(concurrency_count=1, api_open=False)
 main.launch(share=False, show_api=False)
-
-
