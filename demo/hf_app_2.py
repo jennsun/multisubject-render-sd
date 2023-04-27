@@ -1,100 +1,106 @@
-import gradio as gr
-import torch
-import argparse
-from omegaconf import OmegaConf
-from gligen.task_grounded_generation import grounded_generation_box, load_ckpt
-from ldm.util import default_device
+import gradio as gr	
+import torch	
+from omegaconf import OmegaConf	
+from gligen.task_grounded_generation import grounded_generation_box, load_ckpt, load_common_ckpt	
+import json	
+import numpy as np	
+from PIL import Image, ImageDraw, ImageFont	
+from functools import partial	
+from collections import Counter	
+import math	
+import gc	
+from gradio import processing_utils	
+from typing import Optional	
+import warnings	
+from datetime import datetime	
+from huggingface_hub import hf_hub_download	
+hf_hub_download = partial(hf_hub_download, library_name="gligen_demo")	
+import sys	
 
-import json
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-from functools import partial
-import math
-from contextlib import nullcontext
-
-from gradio import processing_utils
-from typing import Optional
-
-from huggingface_hub import hf_hub_download
-hf_hub_download = partial(hf_hub_download, library_name="gligen_demo")
-
+import os
 import openai
 from gradio.components import Textbox, Text
-import os
 
-arg_bool = lambda x: x.lower() == 'true'
-device = default_device()
+sys.tracebacklimit = 0	
 
-# THIS IS THE LOCAL VERSION
-
-print(f"GLIGEN uses {device.upper()} device.")
-if device == "cpu":
-    print("It will be sloooow. Consider using GPU support with CUDA or (in case of M1/M2 Apple Silicon) MPS.")
-elif device == "mps":
-    print("The fastest you can get on M1/2 Apple Silicon. Yet, still many opimizations are switched off and it will is much slower than CUDA.")
-
-def parse_option():
-    parser = argparse.ArgumentParser('GLIGen Demo', add_help=False)
-    parser.add_argument("--folder", type=str,  default="create_samples", help="path to OUTPUT")
-    parser.add_argument("--official_ckpt", type=str,  default='ckpts/sd-v1-4.ckpt', help="")
-    parser.add_argument("--guidance_scale", type=float,  default=5, help="")
-    parser.add_argument("--alpha_scale", type=float,  default=1, help="scale tanh(alpha). If 0, the behaviour is same as original model")
-    parser.add_argument("--load-text-box-generation", type=arg_bool, default=True, help="Load text-box generation pipeline.")
-    parser.add_argument("--load-text-box-inpainting", type=arg_bool, default=False, help="Load text-box inpainting pipeline.")
-    parser.add_argument("--load-text-image-box-generation", type=arg_bool, default=False, help="Load text-image-box generation pipeline.")
-    args = parser.parse_args()
-    return args
-args = parse_option()
-
-
-def load_from_hf(repo_id, filename='diffusion_pytorch_model.bin'):
-    cache_file = hf_hub_download(repo_id=repo_id, filename=filename)
-    return torch.load(cache_file, map_location='cpu')
-
-def load_ckpt_config_from_hf(modality):
-    ckpt = load_from_hf(f'gligen/{modality}')
-    config = load_from_hf('gligen/demo_config_legacy', filename=f'{modality}.pth')
-    return ckpt, config
-
-
-if args.load_text_box_generation:
-    pretrained_ckpt_gligen, config = load_ckpt_config_from_hf('gligen-generation-text-box')
-    config = OmegaConf.create( config["_content"] ) # config used in training
-    config.update( vars(args) )
-    config.model['params']['is_inpaint'] = False
-    config.model['params']['is_style'] = False
-    loaded_model_list = load_ckpt(config, pretrained_ckpt_gligen) 
-
-
-if args.load_text_box_inpainting:
-    pretrained_ckpt_gligen_inpaint, config = load_ckpt_config_from_hf('gligen-inpainting-text-box')
-    config = OmegaConf.create( config["_content"] ) # config used in training
-    config.update( vars(args) )
-    config.model['params']['is_inpaint'] = True 
-    config.model['params']['is_style'] = False
-    loaded_model_list_inpaint = load_ckpt(config, pretrained_ckpt_gligen_inpaint)
-
-
-if args.load_text_image_box_generation:
-    pretrained_ckpt_gligen_style, config = load_ckpt_config_from_hf('gligen-generation-text-image-box')
-    config = OmegaConf.create( config["_content"] ) # config used in training
-    config.update( vars(args) )
-    config.model['params']['is_inpaint'] = False 
-    config.model['params']['is_style'] = True
-    loaded_model_list_style = load_ckpt(config, pretrained_ckpt_gligen_style)
-
-
-def load_clip_model():
-    from transformers import CLIPProcessor, CLIPModel
-    version = "openai/clip-vit-large-patch14"
-    model = CLIPModel.from_pretrained(version).to(device)
-    processor = CLIPProcessor.from_pretrained(version)
-
-    return {
-        'version': version,
-        'model': model,
-        'processor': processor,
-    }
+def load_from_hf(repo_id, filename='diffusion_pytorch_model.bin', subfolder=None):	
+    cache_file = hf_hub_download(repo_id=repo_id, filename=filename, subfolder=subfolder)	
+    return torch.load(cache_file, map_location='cpu')	
+def load_ckpt_config_from_hf(modality):	
+    ckpt = load_from_hf('gligen/demo_ckpts_legacy', filename=f'{modality}.pth', subfolder='model')	
+    config = load_from_hf('gligen/demo_ckpts_legacy', filename=f'{modality}.pth', subfolder='config')	
+    return ckpt, config	
+def ckpt_load_helper(modality, is_inpaint, is_style, common_instances=None):	
+    pretrained_ckpt_gligen, config = load_ckpt_config_from_hf(modality)	
+    config = OmegaConf.create( config["_content"] ) # config used in training	
+    config.alpha_scale = 1.0	
+    config.model['params']['is_inpaint'] = is_inpaint	
+    config.model['params']['is_style'] = is_style	
+    if common_instances is None:	
+        common_ckpt = load_from_hf('gligen/demo_ckpts_legacy', filename=f'common.pth', subfolder='model')	
+        common_instances = load_common_ckpt(config, common_ckpt)	
+    loaded_model_list = load_ckpt(config, pretrained_ckpt_gligen, common_instances)	
+    return loaded_model_list, common_instances	
+class Instance:	
+    def __init__(self, capacity = 2):	
+        self.model_type = 'base'	
+        self.loaded_model_list = {}	
+        self.counter = Counter()	
+        self.global_counter = Counter()	
+        self.loaded_model_list['base'], self.common_instances = ckpt_load_helper(	
+            'gligen-generation-text-box',	
+            is_inpaint=False, is_style=False, common_instances=None	
+        )	
+        self.capacity = capacity	
+    def _log(self, model_type, batch_size, instruction, phrase_list):	
+        self.counter[model_type] += 1	
+        self.global_counter[model_type] += 1	
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")	
+        print('[{}] Current: {}, All: {}. Samples: {}, prompt: {}, phrases: {}'.format(	
+            current_time, dict(self.counter), dict(self.global_counter), batch_size, instruction, phrase_list	
+        ))	
+    def get_model(self, model_type, batch_size, instruction, phrase_list):	
+        if model_type in self.loaded_model_list:	
+            self._log(model_type, batch_size, instruction, phrase_list)	
+            return self.loaded_model_list[model_type]	
+        if self.capacity == len(self.loaded_model_list):	
+            least_used_type = self.counter.most_common()[-1][0]	
+            del self.loaded_model_list[least_used_type]	
+            del self.counter[least_used_type]	
+            gc.collect()	
+            torch.cuda.empty_cache()	
+        self.loaded_model_list[model_type] = self._get_model(model_type)	
+        self._log(model_type, batch_size, instruction, phrase_list)	
+        return self.loaded_model_list[model_type]	
+    def _get_model(self, model_type):	
+        if model_type == 'base':	
+            return ckpt_load_helper(	
+                'gligen-generation-text-box',	
+                is_inpaint=False, is_style=False, common_instances=self.common_instances	
+            )[0]	
+        elif model_type == 'inpaint':	
+            return ckpt_load_helper(	
+                'gligen-inpainting-text-box',	
+                is_inpaint=True, is_style=False, common_instances=self.common_instances	
+            )[0]	
+        elif model_type == 'style':	
+            return ckpt_load_helper(	
+                'gligen-generation-text-image-box',	
+                is_inpaint=False, is_style=True, common_instances=self.common_instances	
+            )[0]	
+        	
+        assert False	
+instance = Instance()	
+def load_clip_model():	
+    from transformers import CLIPProcessor, CLIPModel	
+    version = "openai/clip-vit-large-patch14"	
+    model = CLIPModel.from_pretrained(version).cuda()	
+    processor = CLIPProcessor.from_pretrained(version)	
+    return {	
+        'version': version,	
+        'model': model,	
+        'processor': processor,	
+    }	
 
 clip_model = load_clip_model()
 
@@ -141,7 +147,7 @@ class Blocks(gr.Blocks):
         }
 
         super(Blocks, self).__init__(theme, analytics_enabled, mode, title, css, **kwargs)
-
+        warnings.filterwarnings("ignore")
     def get_config_file(self):
         config = super(Blocks, self).get_config_file()
 
@@ -206,17 +212,20 @@ def inference(task, language_instruction, grounding_instruction, inpainting_boxe
         inpainting_boxes_nodrop = inpainting_boxes_nodrop,
     )
 
-    # float16 autocasting only CUDA device
-    with torch.autocast(device_type='cuda', dtype=torch.float16) if device == "cuda" else nullcontext():
-        if task == 'Grounded Generation':
-            if style_image == None:
-                return grounded_generation_box(loaded_model_list, instruction, *args, **kwargs)
-            else:
-                return grounded_generation_box(loaded_model_list_style, instruction, *args, **kwargs)
-        elif task == 'Grounded Inpainting':
-            assert image is not None
-            instruction['input_image'] = image.convert("RGB")
-            return grounded_generation_box(loaded_model_list_inpaint, instruction, *args, **kwargs)
+    get_model = partial(instance.get_model,	
+                            batch_size=batch_size,	
+                            instruction=language_instruction,	
+                            phrase_list=phrase_list)	
+    with torch.autocast(device_type='cuda', dtype=torch.float16):	
+        if task == 'Grounded Generation':	
+            if style_image == None:	
+                return grounded_generation_box(get_model('base'), instruction, *args, **kwargs)	
+            else:	
+                return grounded_generation_box(get_model('style'), instruction, *args, **kwargs)	
+        elif task == 'Grounded Inpainting':	
+            assert image is not None	
+            instruction['input_image'] = image.convert("RGB")	
+            return grounded_generation_box(get_model('inpaint'), instruction, *args, **kwargs)
 
 
 def draw_box(boxes=[], texts=[], img=None):
@@ -250,18 +259,11 @@ def get_concat(ims):
 
 
 def auto_append_grounding(language_instruction, grounding_texts):
-    print("all grounding_texts", grounding_texts)
-    print("language_instruction 1", language_instruction)
-    # if language_instruction == "textbox":
-    #     language_instruction = seed
-    language_instruction_new = seed
-    print("language_instruction 1.5", language_instruction_new)
     for grounding_text in grounding_texts:
-        # if grounding_text not in language_instruction and grounding_text != 'auto':
-        language_instruction_new += "; " + grounding_text
-    print("auto_append_grounding language instruction", language_instruction)
-    print("language_instruction 2", language_instruction)
-    return language_instruction_new
+        if grounding_text not in language_instruction and grounding_text != 'auto':
+            language_instruction += "; " + grounding_text
+    print(language_instruction)
+    return language_instruction
 
 def generate(task, language_instruction, grounding_texts, sketch_pad,
              alpha_sample, guidance_scale, batch_size,
@@ -272,9 +274,15 @@ def generate(task, language_instruction, grounding_texts, sketch_pad,
 
     boxes = state['boxes']
     grounding_texts = [x.strip() for x in grounding_texts.split(';')]
-    print("grounding", grounding_texts)
-    print("box", boxes)
     assert len(boxes) == len(grounding_texts)
+    if len(boxes) != len(grounding_texts):	
+        if len(boxes) < len(grounding_texts):	
+            raise ValueError("""The number of boxes should be equal to the number of grounding objects.	
+Number of boxes drawn: {}, number of grounding tokens: {}.	
+Please draw boxes accordingly on the sketch pad.""".format(len(boxes), len(grounding_texts)))	
+        grounding_texts = grounding_texts + [""] * (len(boxes) - len(grounding_texts))
+
+
     boxes = (np.asarray(boxes) / 512).tolist()
     grounding_instruction = json.dumps({obj: box for obj,box in zip(grounding_texts, boxes)})
 
@@ -297,17 +305,8 @@ def generate(task, language_instruction, grounding_texts, sketch_pad,
             boxes = boxes.tolist()
             grounding_instruction = json.dumps({obj: box for obj,box in zip(grounding_texts, boxes) if obj != 'auto'})
     
-    # print("what is language_instruction before appending", language_instruction)
-    # tried removing auto_append_grounding
-    # if append_grounding:
-    #     language_instruction = auto_append_grounding(language_instruction, grounding_texts)
-
-    # turn grounding_instruction back into Textbox so it is correct type
-    grounding_instruction = gr.Textbox(
-                label="grounding Instruction by User",
-                value=separated_text,
-                visible=False
-    )
+    if append_grounding:
+        language_instruction = auto_append_grounding(language_instruction, grounding_texts)
 
     gen_images, gen_overlays = inference(
         task, language_instruction, grounding_instruction, boxes, image,
@@ -466,32 +465,21 @@ def clear(task, sketch_pad_trigger, batch_size, state, switch_task=False):
     state = {}
     return [None, sketch_pad_trigger, None, 1.0] + out_images + [state]
 
-css = """
-#generate-btn {
-    --tw-border-opacity: 1;
-    border-color: rgb(255 216 180 / var(--tw-border-opacity));
-    --tw-gradient-from: rgb(255 216 180 / .7);
-    --tw-gradient-to: rgb(255 216 180 / 0);
-    --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
-    --tw-gradient-to: rgb(255 176 102 / .8);
-    --tw-text-opacity: 1;
-    color: rgb(238 116 0 / var(--tw-text-opacity));
-}
-#img2img_image, #img2img_image > .h-60, #img2img_image > .h-60 > div, #img2img_image > .h-60 > div > img
-{
-    height: var(--height) !important;
-    max-height: var(--height) !important;
-    min-height: var(--height) !important;
-}
-#mirrors a:hover {
-    cursor:pointer;
-}
-#paper-info a {
-    color:#008AD7;
-}
-#paper-info a:hover {
-    cursor: pointer;
-}
+css = """	
+#img2img_image, #img2img_image > .fixed-height, #img2img_image > .fixed-height > div, #img2img_image > .fixed-height > div > img	
+{	
+    height: var(--height) !important;	
+    max-height: var(--height) !important;	
+    min-height: var(--height) !important;	
+}	
+#paper-info a {	
+    color:#008AD7;	
+    text-decoration: none;	
+}	
+#paper-info a:hover {	
+    cursor: pointer;	
+    text-decoration: none;	
+}	
 """
 
 rescale_js = """
@@ -507,42 +495,10 @@ function(x) {
 }
 """
 
-mirror_js = """
-function () {
-    const root = document.querySelector('gradio-app').shadowRoot || document.querySelector('gradio-app');
-    const mirrors_div = root.querySelector('#mirrors');
-    const current_url = window.location.href;
-    const mirrors = [
-        'https://dev.hliu.cc/gligen_mirror1/',
-        'https://dev.hliu.cc/gligen_mirror2/',
-    ];
-
-    let mirror_html = '';
-    mirror_html += '[<a href="https://gligen.github.io" target="_blank" style="">Project Page</a>]';
-    mirror_html += '[<a href="https://arxiv.org/abs/2301.07093" target="_blank" style="">Paper</a>]';
-    mirror_html += '[<a href="https://github.com/gligen/GLIGEN" target="_blank" style="">GitHub Repo</a>]';
-    mirror_html += '&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;';
-    mirror_html += 'Mirrors: ';
-
-    mirrors.forEach((e, index) => {
-        let cur_index = index + 1;
-        if (current_url.includes(e)) {
-            mirror_html += `[Mirror ${cur_index}] `;
-        } else {
-            mirror_html += `[<a onclick="window.location.href = '${e}'">Mirror ${cur_index}</a>] `;
-        }
-    });
-
-    mirror_html = `<div class="output-markdown gr-prose" style="max-width: 100%;"><h3 style="text-align: center" id="paper-info">${mirror_html}</h3></div>`;
-
-    mirrors_div.innerHTML = mirror_html;
-}
-"""
-
 # Set up OpenAI API key
-openai.api_key = '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'
+openai.api_key = os.environ['OPENAI_API_KEY']
 
-prompt_base = 'Separate the subjects in this sentence by semicolons. For example, the sentence "a tiger and a horse running in a greenland" should output "tiger; horse". If there are numbers, make each subject unique. For example, "2 dogs and 1 duck" would be "dog; dog; duck." Do the same for the following sentence: \n'
+prompt_base = 'Separate the subjects in this sentence by semicolons. For example, the sentence "a tiger and a horse running" should output "tiger; horse". If there are numbers, make each subject unique. For example, "2 dogs and 1 duck" would be "dog; dog; duck." Do the same for the following sentence: \n'
 
 original_input = ""
 separated_subjects = ""
@@ -571,23 +527,6 @@ def separate_subjects(input_text):
     output_text = response.choices[0].text.strip()
     return output_text
 
-# def update_original_input():
-#     print("start update_original_input")
-#     global original_input
-#     original_input = language_instruction.value
-#     print("original_input in update:", original_input)
-
-# def update_grounding_instruction():
-#     print("start update_grounding_instruction")
-#     # global original_input # declare you want to use the outer variable
-#     global separated_subjects
-#     update_original_input()
-#     separated_subjects = separate_subjects(language_instruction.value)
-#     # separated_subjects = separate_subjects(original_input)
-#     grounding_instruction.value = separated_subjects
-#     print("original_input:", original_input)
-#     print("separated_subjects", separated_subjects)
-
 with Blocks(
     css=css,
     analytics_enabled=False,
@@ -606,7 +545,7 @@ with Blocks(
 
             # UNCOMMENT THIS WHEN YOU WANT TO TOGGLE INPAINTING OPTION
             task = gr.Radio(
-                choices=["Grounded Generation", 'Grounded Inpainting'],
+                choices=["Version 1: Single Layer", 'Version 2: Inpainting w/ Multiple Layers'],
                 type="value",
                 value="Grounded Generation",
                 label="Task",
@@ -631,26 +570,18 @@ with Blocks(
             with gr.Column():
                 separated_text = gr.Text(label="Subjects Separated by Semicolon")
             btn.click(separate_subjects, inputs=[seed], outputs=[separated_text])
-            ####################
             language_instruction = gr.Textbox(
                 label="Language Instruction by User",
                 value=seed,
                 visible=False
             )
-            # grounding_instruction = gr.Textbox(
-            #     label="Subjects in image (Separated by semicolon)",
-            #     value=separated_text,
-            #     visible=False
-            # )
             print("separated_text", separated_text)
-            # turn grounding_instruction into separated text for auto_append_grounding
             grounding_instruction=separated_text
-            # grounding_instruction = gr.Textbox(
-            #     label="grounding Instruction by User",
-            #     value=separated_text,
-            #     visible=False
-            # )
             print("grounding instrcc", grounding_instruction)
+            # language_instruction.value = seed
+            # grounding_instruction.value = separated_text
+            
+            ####################
             # language_instruction = gr.Textbox(
             #     label="Enter your prompt here",
             # )
@@ -681,7 +612,7 @@ with Blocks(
                 out_imagebox = gr.Image(type="pil", label="Parsed Sketch Pad")
             with gr.Row():
                 clear_btn = gr.Button(value='Clear')
-                gen_btn = gr.Button(value='Generate', elem_id="generate-btn")
+                gen_btn = gr.Button(value='Generate')
             with gr.Accordion("Advanced Options", open=False):
                 with gr.Column():
                     alpha_sample = gr.Slider(minimum=0, maximum=1.0, step=0.1, value=0.3, label="Scheduled Sampling (τ)", visible=False)
@@ -696,7 +627,7 @@ with Blocks(
                         use_style_cond = gr.Checkbox(value=False, label="Enable Style Condition", visible=False)
                         style_cond_image = gr.Image(type="pil", label="Style Condition", interactive=True, visible=False)
         with gr.Column(scale=4):
-            gr.Markdown("### Generated Images")
+            gr.HTML('<span style="font-size: 20px; font-weight: bold">Generated Images</span>')
             with gr.Row():
                 out_gen_1 = gr.Image(type="pil", visible=True, show_label=False)
                 out_gen_2 = gr.Image(type="pil", visible=True, show_label=False)
@@ -836,4 +767,4 @@ with Blocks(
             queue=False)
 
 main.queue(concurrency_count=1, api_open=False)
-main.launch(share=False, show_api=False)
+main.launch(share=False, show_api=False, show_error=True)
