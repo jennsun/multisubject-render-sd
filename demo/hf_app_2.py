@@ -212,6 +212,8 @@ def inference(task, language_instruction, grounding_instruction, inpainting_boxe
         inpainting_boxes_nodrop = inpainting_boxes_nodrop,
     )
 
+    print("instruction values", instruction)
+
     get_model = partial(instance.get_model,	
                             batch_size=batch_size,	
                             instruction=language_instruction,	
@@ -285,6 +287,7 @@ Please draw boxes accordingly on the sketch pad.""".format(len(boxes), len(groun
 
     boxes = (np.asarray(boxes) / 512).tolist()
     grounding_instruction = json.dumps({obj: box for obj,box in zip(grounding_texts, boxes)})
+    print("GROUNDING instruction -- should be separated text semicolon", grounding_instruction)
 
     image = None
     actual_mask = None
@@ -305,8 +308,9 @@ Please draw boxes accordingly on the sketch pad.""".format(len(boxes), len(groun
             boxes = boxes.tolist()
             grounding_instruction = json.dumps({obj: box for obj,box in zip(grounding_texts, boxes) if obj != 'auto'})
     
-    if append_grounding:
-        language_instruction = auto_append_grounding(language_instruction, grounding_texts)
+    # Try to remove append grounding
+    # if append_grounding:
+    #     language_instruction = auto_append_grounding(language_instruction, grounding_texts)
 
     gen_images, gen_overlays = inference(
         task, language_instruction, grounding_instruction, boxes, image,
@@ -498,7 +502,7 @@ function(x) {
 # Set up OpenAI API key
 openai.api_key = os.environ['OPENAI_API_KEY']
 
-prompt_base = 'Separate the subjects in this sentence by semicolons. For example, the sentence "a tiger and a horse running" should output "tiger; horse". If there are numbers, make each subject unique. For example, "2 dogs and 1 duck" would be "dog; dog; duck." Do the same for the following sentence: \n'
+prompt_base = 'Separate the subjects in this sentence by semicolons. For example, the sentence "a tiger and a horse running in a greenland" should output "tiger; horse". If there are numbers, make each subject unique. For example, "2 dogs and 1 duck" would be "dog; dog; duck." Do the same for the following sentence: \n'
 
 original_input = ""
 separated_subjects = ""
@@ -549,6 +553,7 @@ with Blocks(
                 type="value",
                 value="Grounded Generation",
                 label="Task",
+                visible=False,
             )
 
             # language_instruction = gr.Textbox(
@@ -563,21 +568,23 @@ with Blocks(
 
             # EXPERIMENTING:
             with gr.Column():
-                seed = gr.Text(label="Enter your prompt here:")
-            gr.Examples(["2 horses running", "A cowboy and ninja fighting", "An apple and an orange on a table"], inputs=[seed])
+                user_input = gr.Text(label="Enter your prompt here:")
+            gr.Examples(["2 horses running", "A cowboy and ninja fighting", "An apple and an orange on a table"], inputs=[user_input])
             with gr.Column():
                 btn = gr.Button("Gen")
             with gr.Column():
                 separated_text = gr.Text(label="Subjects Separated by Semicolon")
-            btn.click(separate_subjects, inputs=[seed], outputs=[separated_text])
-            language_instruction = gr.Textbox(
-                label="Language Instruction by User",
-                value=seed,
-                visible=False
-            )
+            btn.click(separate_subjects, inputs=[user_input], outputs=[separated_text])
+            # language_instruction = gr.Textbox(
+            #     label="Language Instruction by User",
+            #     value=seed,
+            #     visible=False
+            # )
             print("separated_text", separated_text)
+            language_instruction=user_input
             grounding_instruction=separated_text
-            print("grounding instrcc", grounding_instruction)
+            print("language_instruction after blocks: ", language_instruction)
+            print("grounding_instruction after blocks: ", language_instruction)
             # language_instruction.value = seed
             # grounding_instruction.value = separated_text
             
@@ -601,8 +608,8 @@ with Blocks(
             #     visible=False
             # )
             
-            print("Language instruction:", language_instruction.value)
-            print("Grounding instruction:", grounding_instruction.value)
+            # print("Language instruction Value:", language_instruction.value)
+            # print("Grounding instruction:", grounding_instruction.value)
 
 
             ####################

@@ -1,3 +1,4 @@
+# from demo.gligen.ldm.util import default
 import gradio as gr
 import torch
 import argparse
@@ -188,7 +189,13 @@ def inference(task, language_instruction, grounding_instruction, inpainting_boxe
 
     if task == 'Grounded Inpainting':
         alpha_sample = 1.0
+    
+    global user_input
+    # language_instruction = user_input
+    print("language instruction value", language_instruction)
+    print("user input before instruction", user_input)
 
+    # where user_input is I changed from language_instruction
     instruction = dict(
         prompt = language_instruction,
         phrases = phrase_list,
@@ -205,6 +212,8 @@ def inference(task, language_instruction, grounding_instruction, inpainting_boxe
         actual_mask = actual_mask,
         inpainting_boxes_nodrop = inpainting_boxes_nodrop,
     )
+
+    print("instruction values", instruction)
 
     # float16 autocasting only CUDA device
     with torch.autocast(device_type='cuda', dtype=torch.float16) if device == "cuda" else nullcontext():
@@ -274,9 +283,11 @@ def generate(task, language_instruction, grounding_texts, sketch_pad,
     grounding_texts = [x.strip() for x in grounding_texts.split(';')]
     print("grounding", grounding_texts)
     print("box", boxes)
+    
     assert len(boxes) == len(grounding_texts)
     boxes = (np.asarray(boxes) / 512).tolist()
     grounding_instruction = json.dumps({obj: box for obj,box in zip(grounding_texts, boxes)})
+    print("GROUNDING instruction -- should be separated text semicolon", grounding_instruction)
 
     image = None
     actual_mask = None
@@ -303,11 +314,17 @@ def generate(task, language_instruction, grounding_texts, sketch_pad,
     #     language_instruction = auto_append_grounding(language_instruction, grounding_texts)
 
     # turn grounding_instruction back into Textbox so it is correct type
-    grounding_instruction = gr.Textbox(
-                label="grounding Instruction by User",
-                value=separated_text,
-                visible=False
-    )
+    # grounding_instruction = gr.Textbox(
+    #             label="grounding Instruction by User",
+    #             value=separated_text,
+    #             visible=False
+    # )
+    # language_instruction = gr.Textbox(
+    #     label="Language Instruction by User",
+    #     default=seed,
+    #     value=seed,
+    #     visible=False
+    # )
 
     gen_images, gen_overlays = inference(
         task, language_instruction, grounding_instruction, boxes, image,
@@ -558,6 +575,17 @@ separated_subjects = ""
 #     visible=False
 # )
 
+def update_language_instruction(user_input):
+    language_instruction_value = user_input
+    language_instruction = gr.Textbox(
+        label="Language Instruction by User",
+        value=language_instruction_value,
+        visible=False,
+    )
+    print("user_input updated is now:", user_input)
+    return language_instruction
+
+
 def separate_subjects(input_text):
     prompt = prompt_base + input_text
     response = openai.Completion.create(
@@ -610,6 +638,7 @@ with Blocks(
                 type="value",
                 value="Grounded Generation",
                 label="Task",
+                visible=False,
             )
 
             # language_instruction = gr.Textbox(
@@ -622,21 +651,40 @@ with Blocks(
             # print(f"The user entered: {language_instruction}")
             # print(f"Our function gave: {grounding_instruction}")
 
+            # user_input = ""
+            # Function to update the language_instruction Textbox
+            # def update_language_instruction(language_instruction_value):
+            #     global user_input
+            #     user_input = language_instruction_value
+            #     print("user_input updated is now:", user_input)
+
             # EXPERIMENTING:
+            
             with gr.Column():
-                seed = gr.Text(label="Enter your prompt here:")
-            gr.Examples(["2 horses running", "A cowboy and ninja fighting", "An apple and an orange on a table"], inputs=[seed])
+                user_input = gr.Text(label="Enter your prompt here:")
+                # language_instruction = gr.Textbox(
+                #     label="Language Instruction by User",
+                #     visible=False,
+                # )
+            # user_input = language_instruction.get()
+            # update_language_instruction(user_input)
+            gr.Examples(["2 horses running", "A cowboy and ninja fighting", "An apple and an orange on a table"], inputs=[user_input])
             with gr.Column():
                 btn = gr.Button("Gen")
             with gr.Column():
                 separated_text = gr.Text(label="Subjects Separated by Semicolon")
-            btn.click(separate_subjects, inputs=[seed], outputs=[separated_text])
-            ####################
-            language_instruction = gr.Textbox(
-                label="Language Instruction by User",
-                value=seed,
-                visible=False
-            )
+            btn.click(separate_subjects, inputs=[user_input], outputs=[separated_text])
+            # btn.click(update_language_instruction, inputs=[user_input], outputs=[language_instruction])
+
+            # language_instruction = gr.Textbox(
+            #     label="Language Instruction by User",
+            #     default=user_input,
+            #     value=user_input,
+            #     visible=False
+            # )
+            # bt.click calls both the separate_subjects input function and the update_language_instruction function
+            # btn.click(update_language_instruction, inputs=[user_input])
+
             # grounding_instruction = gr.Textbox(
             #     label="Subjects in image (Separated by semicolon)",
             #     value=separated_text,
@@ -644,13 +692,14 @@ with Blocks(
             # )
             print("separated_text", separated_text)
             # turn grounding_instruction into separated text for auto_append_grounding
+            language_instruction=user_input
             grounding_instruction=separated_text
             # grounding_instruction = gr.Textbox(
             #     label="grounding Instruction by User",
             #     value=separated_text,
             #     visible=False
             # )
-            print("grounding instrcc", grounding_instruction)
+            # print("grounding instrcc", grounding_instruction)
             # language_instruction = gr.Textbox(
             #     label="Enter your prompt here",
             # )
@@ -661,7 +710,8 @@ with Blocks(
 
             # language_instruction = gr.Textbox(
             #     label="just needs to be here",
-            #     value=seed,
+            #     value=user_input,
+            #     default=user_input,
             #     visible=False
             # )
             # grounding_instruction = gr.Textbox(
@@ -670,7 +720,7 @@ with Blocks(
             #     visible=False
             # )
             
-            print("Language instruction:", language_instruction.value)
+            print("Language instruction Value:", language_instruction.value)
             print("Grounding instruction:", grounding_instruction.value)
 
 

@@ -1,3 +1,4 @@
+# Cleaning up hf_app_2 to remove print statements and commented out code
 import gradio as gr	
 import torch	
 from omegaconf import OmegaConf	
@@ -19,7 +20,6 @@ import sys
 
 import os
 import openai
-from gradio.components import Textbox, Text
 
 sys.tracebacklimit = 0	
 
@@ -52,6 +52,13 @@ class Instance:
             is_inpaint=False, is_style=False, common_instances=None	
         )	
         self.capacity = capacity	
+    def _log(self, model_type, batch_size, instruction, phrase_list):	
+        self.counter[model_type] += 1	
+        self.global_counter[model_type] += 1	
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")	
+        print('[{}] Current: {}, All: {}. Samples: {}, prompt: {}, phrases: {}'.format(	
+            current_time, dict(self.counter), dict(self.global_counter), batch_size, instruction, phrase_list	
+        ))	
     def get_model(self, model_type, batch_size, instruction, phrase_list):	
         if model_type in self.loaded_model_list:	
             self._log(model_type, batch_size, instruction, phrase_list)	
@@ -65,11 +72,24 @@ class Instance:
         self.loaded_model_list[model_type] = self._get_model(model_type)	
         self._log(model_type, batch_size, instruction, phrase_list)	
         return self.loaded_model_list[model_type]	
-    def _get_model(self, model_type):		
-        return ckpt_load_helper(	
-            'gligen-generation-text-box',	
-            is_inpaint=False, is_style=False, common_instances=self.common_instances	
-        )[0]	
+    def _get_model(self, model_type):	
+        if model_type == 'base':	
+            return ckpt_load_helper(	
+                'gligen-generation-text-box',	
+                is_inpaint=False, is_style=False, common_instances=self.common_instances	
+            )[0]	
+        elif model_type == 'inpaint':	
+            return ckpt_load_helper(	
+                'gligen-inpainting-text-box',	
+                is_inpaint=True, is_style=False, common_instances=self.common_instances	
+            )[0]	
+        elif model_type == 'style':	
+            return ckpt_load_helper(	
+                'gligen-generation-text-image-box',	
+                is_inpaint=False, is_style=True, common_instances=self.common_instances	
+            )[0]	
+        	
+        assert False	
 instance = Instance()	
 def load_clip_model():	
     from transformers import CLIPProcessor, CLIPModel	
@@ -192,6 +212,10 @@ def inference(task, language_instruction, grounding_instruction, inpainting_boxe
         inpainting_boxes_nodrop = inpainting_boxes_nodrop,
     )
 
+    # for debugging purposes, uncomment to view all instruction values
+    # fed into the model
+    # print("instruction values", instruction)
+
     get_model = partial(instance.get_model,	
                             batch_size=batch_size,	
                             instruction=language_instruction,	
@@ -265,6 +289,7 @@ Please draw boxes accordingly on the sketch pad.""".format(len(boxes), len(groun
 
     boxes = (np.asarray(boxes) / 512).tolist()
     grounding_instruction = json.dumps({obj: box for obj,box in zip(grounding_texts, boxes)})
+    print("GROUNDING instruction -- should be separated text semicolon", grounding_instruction)
 
     image = None
     actual_mask = None
@@ -285,8 +310,9 @@ Please draw boxes accordingly on the sketch pad.""".format(len(boxes), len(groun
             boxes = boxes.tolist()
             grounding_instruction = json.dumps({obj: box for obj,box in zip(grounding_texts, boxes) if obj != 'auto'})
     
-    if append_grounding:
-        language_instruction = auto_append_grounding(language_instruction, grounding_texts)
+    # Removing append grounding
+    # if append_grounding:
+    #     language_instruction = auto_append_grounding(language_instruction, grounding_texts)
 
     gen_images, gen_overlays = inference(
         task, language_instruction, grounding_instruction, boxes, image,
@@ -478,21 +504,10 @@ function(x) {
 # Set up OpenAI API key
 openai.api_key = os.environ['OPENAI_API_KEY']
 
-prompt_base = 'Separate the subjects in this sentence by semicolons. For example, the sentence "a tiger and a horse running" should output "tiger; horse". If there are numbers, make each subject unique. For example, "2 dogs and 1 duck" would be "dog; dog; duck." Do the same for the following sentence: \n'
+prompt_base = 'Separate the subjects in this sentence by semicolons. For example, the sentence "a tiger and a horse running in a greenland" should output "tiger; horse". If there are numbers, make each subject unique. For example, "2 dogs and 1 duck" would be "dog; dog; duck." Do the same for the following sentence: \n'
 
 original_input = ""
 separated_subjects = ""
-
-# language_instruction = gr.Textbox(
-#     label="Language Instruction by User",
-#     value="2 horses running",
-#     visible=False
-# )
-# grounding_instruction = gr.Textbox(
-#     label="Subjects in image (Separated by semicolon)",
-#     value="horse; horse",
-#     visible=False
-# )
 
 def separate_subjects(input_text):
     prompt = prompt_base + input_text
@@ -523,69 +538,28 @@ with Blocks(
             image_scale = gr.Number(value=0, elem_id="image_scale", visible=False)
             new_image_trigger = gr.Number(value=0, visible=False)
 
-            # UNCOMMENT THIS WHEN YOU WANT TO TOGGLE INPAINTING OPTION
+            # Make Visible True if desired to include inpainting
             task = gr.Radio(
                 choices=["Version 1: Single Layer", 'Version 2: Inpainting w/ Multiple Layers'],
                 type="value",
                 value="Grounded Generation",
                 label="Task",
+                visible=False,
             )
 
-            # language_instruction = gr.Textbox(
-            #     label="Enter your prompt here",
-            # )
-            # grounding_instruction = gr.Textbox(
-            #     label="Grounding instruction (Separated by semicolon)",
-            # )
-            # grounding_instruction = separate_subjects(language_instruction.value)
-            # print(f"The user entered: {language_instruction}")
-            # print(f"Our function gave: {grounding_instruction}")
-
-            # EXPERIMENTING:
             with gr.Column():
-                seed = gr.Text(label="Enter your prompt here:")
-            gr.Examples(["2 horses running", "A cowboy and ninja fighting", "An apple and an orange on a table"], inputs=[seed])
+                user_input = gr.Text(label="Enter your prompt here:")
+            gr.Examples(["2 horses running", "A cowboy and ninja fighting", "An apple and an orange on a table"], inputs=[user_input])
             with gr.Column():
                 btn = gr.Button("Gen")
             with gr.Column():
                 separated_text = gr.Text(label="Subjects Separated by Semicolon")
-            btn.click(separate_subjects, inputs=[seed], outputs=[separated_text])
-            language_instruction = gr.Textbox(
-                label="Language Instruction by User",
-                value=seed,
-                visible=False
-            )
-            print("separated_text", separated_text)
+            btn.click(separate_subjects, inputs=[user_input], outputs=[separated_text])
+
+            # set the language and grounding instruction to user input
+            # and separated subjects, respectively
+            language_instruction=user_input
             grounding_instruction=separated_text
-            print("grounding instrcc", grounding_instruction)
-            # language_instruction.value = seed
-            # grounding_instruction.value = separated_text
-            
-            ####################
-            # language_instruction = gr.Textbox(
-            #     label="Enter your prompt here",
-            # )
-            # original_input = language_instruction.value
-            # start_btn = gr.Button('Start')
-            # start_btn.click(update_grounding_instruction)
-            # print("separated subjects 2:", separated_subjects)
-
-            # language_instruction = gr.Textbox(
-            #     label="just needs to be here",
-            #     value=seed,
-            #     visible=False
-            # )
-            # grounding_instruction = gr.Textbox(
-            #     label="Subjects in image (Separated by semicolon)",
-            #     value=separated_text,
-            #     visible=False
-            # )
-            
-            print("Language instruction:", language_instruction.value)
-            print("Grounding instruction:", grounding_instruction.value)
-
-
-            ####################
 
             with gr.Row():
                 sketch_pad = ImageMask(label="Sketch Pad", elem_id="img2img_image")
@@ -715,14 +689,6 @@ with Blocks(
             outputs=[out_gen_1, out_gen_2, out_gen_3, out_gen_4, state],
             queue=True
         )
-        # start_btn.click(
-        #     update_grounding_instruction,
-        #     # inputs=[
-        #     #     original_input,
-        #     # ],
-        #     # outputs=[separated_subjects],
-        #     # queue=True
-        # )
         sketch_pad_resize_trigger.change(
             None,
             None,
