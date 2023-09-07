@@ -557,7 +557,7 @@ function () {
 """
 
 # Set up OpenAI API key
-openai.api_key = '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'
+openai.api_key = os.environ['OPENAI_API_KEY']
 
 prompt_base = 'Separate the subjects in this sentence by semicolons. For example, the sentence "a tiger and a horse running in a greenland" should output "tiger; horse". If there are numbers, make each subject unique. For example, "2 dogs and 1 duck" would be "dog; dog; duck." Do the same for the following sentence: \n'
 
